@@ -26,9 +26,7 @@ import time
 np.set_printoptions(threshold=np.inf)
 
 
-
-
-
+#Note: Instead of reading the file summary, one could also directely read the information from the EDF files.
 def parse_summary_file(summary_path):
     """
     Returns a list of dicts, each dict containing:
@@ -114,90 +112,7 @@ def parse_summary_file(summary_path):
 
     return records
 
-def extract_preictal_segments(file_records, preictal_duration_min=30, min_length_min=20):
-    """
-    Extract preictal segments from multiple recordings for one subject.
-    
-    Parameters:
-      file_records: a list of dictionaries, each having:
-          - 'file_name'
-          - 'start_time_of_file': datetime
-          - 'end_time_of_file': datetime
-          - 'seizures': list of dicts with keys 'start_seconds' and 'end_seconds'
-      preictal_duration_min: duration in minutes to extract before a seizure.
-    
-    Returns:
-      preictal_segments: a list of extracted segments.
-         Each element is either:
-           { 'file': <file_name>, 'start': <start_sec>, 'end': <end_sec> }
-         or, for segments spanning two files, a tuple:
-           ( { 'file': <prev_file>, 'start': <start_sec>, 'end': <prev_duration> },
-             { 'file': <curr_file>, 'start': 0, 'end': <seizure_start> } )
-    """
-    preictal_duration = preictal_duration_min * 60  # convert minutes to seconds
-    min_length        = min_length_min * 60           # seconds minimum total length
-
-    # Sort files by starting time
-    file_records = sorted(file_records, key=lambda rec: rec["start_time_of_file"])
-    
-    # Compute duration for each file record (in seconds)
-    for rec in file_records:
-        rec["duration"] = (rec["end_time_of_file"] - rec["start_time_of_file"]).total_seconds()
-
-    preictal_segments = []
-    
-    for i, rec in enumerate(file_records):
-        seizures = rec.get("seizures", [])
-        for seiz in seizures:
-            t_seizure = seiz["start_seconds"]
-            # Case 1: Entire preictal window is in the current file.
-            if t_seizure >= preictal_duration:
-                seg = { 'file': rec["file_name"],
-                        'start': t_seizure - preictal_duration,
-                        'end': t_seizure}
-                preictal_segments.append(seg)
-            else:
-                # Case 2: Preictal spans from previous file into current file.
-                if i == 0:
-                    # No previous file available – use available part only.
-                    seg = { 'file': rec["file_name"],
-                            'start': 0,
-                            'end': t_seizure}
-                    preictal_segments.append(seg)
-                else:
-                    prev_rec = file_records[i-1]
-                    # Compute gap between previous file's end and current file's start:
-                    gap = (rec["start_time_of_file"] - prev_rec["end_time_of_file"]).total_seconds()
-                    # Available from current file: t_seizure seconds.
-                    # Needed remaining preictal time from previous file:
-                    needed_prev = preictal_duration - t_seizure - gap
-                    if (needed_prev <= 0):
-                      # dont extract anything from prevous file, just use current file
-                      seg = { 'file': rec["file_name"],
-                                'start': 0,
-                                'end': t_seizure}
-                      preictal_segments.append(seg)
-                    else:         
-                      # Make sure we do not try to extract more than exists in previous file:
-                      start_prev = max(0, prev_rec["duration"] - needed_prev)
-                      seg_prev = { 'file': prev_rec["file_name"],
-                                  'start': start_prev,
-                                   'end': prev_rec["duration"]}
-                      seg_curr = { 'file': rec["file_name"],
-                                  'start': 0,
-                                  'end': t_seizure}
-                      preictal_segments.append((seg_prev, seg_curr))
-        # now filter out anything shorter than min_length
-    def segment_length(seg):
-        if isinstance(seg, dict):
-            return seg["end"] - seg["start"]
-        else:
-            # tuple: sum lengths of both pieces
-            return sum(s["end"] - s["start"] for s in seg)
-
-    filtered = [seg for seg in preictal_segments if segment_length(seg) >= min_length]
-    return filtered
-
+#Extracts the preictal segments while considering the postictal duration for close to each other seizures
 def extract_preictal_segments_distance(
     file_records,
     preictal_duration_min: float = 30,
@@ -284,6 +199,12 @@ def extract_preictal_segments_distance(
                         }
                     )
         # 4) finally reject anything that doesn’t meet min_length
+        '''
+        Note: Here we discard segments that are shorter than min_len.
+        If we want to keep them, we could remove this check, 
+        -> in the postprocessing one would also have to count the positive prediction of the preceeding seizure as 2 correct predictions
+           -> This is the case if we would remove the 2nd preictal since it doesn't meet min_length        
+        '''
         length = (seg["end"] - seg["start"]) if isinstance(seg, dict) \
                  else sum(piece["end"]-piece["start"] for piece in seg)
         if length >= min_len:
@@ -371,8 +292,8 @@ def chunk_absolute_times(records, tn_chunk):
 
 def extract_interictal_data(file_records,
                             preictal_duration_sec=30*60,    # duration in seconds that is considered preictal
-                            interictal_buffer_sec=180*60,    # additional buffer (in sec) before seizure start
-                            postictal_duration_min=30):   # postictal period in minutes
+                            interictal_buffer_sec=180*60,   # additional buffer (in sec) before seizure start
+                            postictal_duration_min=30):     # postictal period in minutes
     """
     Extract interictal segments for one subject from multiple files.
     
@@ -397,8 +318,9 @@ def extract_interictal_data(file_records,
          - "start": local start time (in seconds relative to file start)
          - "end": local end time (in seconds relative to file start)
     
-    Note: preictal_records is not directly used in this implementation because
+    Note: -> preictal_records is not directly used in this implementation because
           the unsafe intervals are computed using the seizure times.
+          -> THe preictal_duration_sec is the buffer after the seizure, it's not the actual posictal of the seizure
     """
     
     # Use the start_time of the first file as the reference (base) time.
@@ -600,7 +522,7 @@ def combine_interictal_preictal(interictal_dict, preictal_list):
     # (1) Flatten interictal segments.
     flattened, total_time = flatten_interictal(interictal_dict)
 
-    # (2) Let n be the number of preictal segments.
+    # (2) Let n be the number of preictal segments, (the number of seizures for the subject).
     n = len(preictal_list)
     if n == 0:
         raise ValueError("No preictal segments provided.")
@@ -616,7 +538,7 @@ def combine_interictal_preictal(interictal_dict, preictal_list):
     pairs = list(zip(partitions, preictal_shuffled))
     return pairs
 
-#unused function, but can be used to generate the splits for the cross-validation
+#unused helper function, but ccn be used to generate the splits for the cross-validation manually
 def generate_loocv_splits(pairs): 
     
     """ Given a list of pairs (each pair contains an interictal segment partition and a preictal segment),
@@ -635,10 +557,10 @@ def generate_loocv_splits(pairs):
     return splits
 
 
-#Extract data from the annotaec file pairs
+#Extract data from the annotated file pairs
 def extract_segment_data(segment, base_path, present_channels):
     """ Given a segment dictionary (with keys: 'file': EDF file name, 'start': start time in seconds (relative to file start),
-    'end': end time in seconds, ) extract the EEG data from that file over the specified time window.
+    'end': end time in seconds, ) extract the EEG data from that file over the specified time period.
     Returns:
      A numpy array of shape (n_channels, n_samples).
      """
@@ -705,7 +627,7 @@ def preprocess_eeg(
         b_n, a_n = iirnotch(f0, notch_Q, fs)
         filtered = filtfilt(b_n, a_n, filtered, axis=-1)
 
-    # 2) Band-pass or high-pass -> Some papers only consider frequencies up to 60Hz 
+    # 2) Band-pass or high-pass -> Some papers only consider frequencies up to 60Hz by taking a bandpass filter [0-60Hz]
     if bandpass:
         # design Butterworth band-pass
         nyq = fs/2
@@ -714,7 +636,7 @@ def preprocess_eeg(
         b_bp, a_bp = butter(bp_order, [low, high], btype='bandpass')
         filtered = filtfilt(b_bp, a_bp, filtered, axis=-1)
     else:
-        # design Butterworth high-pass only
+        # design Butterworth high-pass only, filter out DC noise at 0Hz
         nyq = fs/2
         wn  = highpass_freq / nyq
         b_hp, a_hp = butter(bp_order, wn, btype='highpass')
@@ -771,7 +693,7 @@ def process_tn_chunks(tn_chunks, base_path, present_channels):
 
     return interictal_data_list, preictal_data_list
 
-#Performing the over/undersampling of the data
+#Performing the over/undersampling of the data -> Currently Not used
 def sliding_windows(data: np.ndarray,
                     window_size: int,
                     stride: int) -> List[np.ndarray]:
@@ -823,6 +745,7 @@ def _build_window_times(segments, file_abs_starts, window_len):
 
     return times
 
+#currently not used, but can be used to balance the data if over/undersamling is used to balance the data
 def balance_one_pair(inter: np.ndarray,
                      pre: np.ndarray,
                      window_len: float,
@@ -851,7 +774,7 @@ def balance_one_pair(inter: np.ndarray,
     return inter_windows, pre_windows
 
 
-#Methods to prep the dataset
+#Methods to prep the dataset, balancing it if we want to use over/undersampling
 def make_balance_dataset(train_pairs, window_len, sampling_rate):
     balanced = []
     for inter_data, pre_data in train_pairs:
@@ -877,6 +800,7 @@ class WindowDataset(Dataset):
 
     # flatten + chronological split exactly as before
     
+#Take the last val_frac of the training data as validation set each(for the interictal and preictal data)
 def make_train_val_loaders(dataset,window_len, val_frac, batch_size): 
     
     window_len = int(window_len * 256) #convert seconds to samples
@@ -923,6 +847,7 @@ def make_train_val_loaders(dataset,window_len, val_frac, batch_size):
     )
     return train_loader, val_loader
 
+#Same as above but we have the already balanced dataset as input (#interictal windows == #preictal windows)
 def make_train_val_loaders_last_balanced(balanced_dataset, val_frac, batch_size):
     inter, pre = [], []
     for i_wins, p_wins in balanced_dataset:
@@ -964,16 +889,23 @@ def make_train_val_loaders_last_balanced(balanced_dataset, val_frac, batch_size)
     )
     return train_loader, val_loader
 
-#this function would take the validation set randomly -> dont use this for the final model
-def make_train_val_loaders_random_val(balanced_dataset, val_frac, batch_size, random_state=42):
-    """
-    balanced_dataset: list of (i_wins, p_wins) pairs, where each is a list of
-                      numpy arrays shape (C, L)
-    val_frac:        fraction of examples (of each class) to reserve for validation
-    """
-    # 1) collect each class into flat lists
+#this function takes the internal validation set randomly, this is our current function
+
+def make_train_val_loaders_random_val(dataset, window_len, val_frac, batch_size, random_state=42):
+   
+   #Can use this if want to work with the balanced dataset
+    # # 1) collect each class into flat lists
+    # inter, pre = [], []
+    # for i_wins, p_wins in balanced_dataset:
+    #     inter.extend(i_wins)
+    #     pre  .extend(p_wins)
+    
+    window_len = int(window_len * 256) #convert seconds to samples
     inter, pre = [], []
-    for i_wins, p_wins in balanced_dataset:
+    for inter_data, pre_data in dataset:
+        i_wins = split_nonoverlap(inter_data, window_len)
+        p_wins = split_nonoverlap(pre_data,   window_len)        
+        
         inter.extend(i_wins)
         pre  .extend(p_wins)
 

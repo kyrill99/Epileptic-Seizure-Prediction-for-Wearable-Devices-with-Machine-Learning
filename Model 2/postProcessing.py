@@ -97,7 +97,6 @@ def risk_levels_strings(fp: np.ndarray,
     risk[mask_low] = 'low'
     return risk
 
-import numpy as np
 
 def evaluate_seizure_fold_SPH_SOP_complex(
     y_pred,            # 1D array of 0/1 alarms
